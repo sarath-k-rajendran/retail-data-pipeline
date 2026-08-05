@@ -1,0 +1,8 @@
+# Local development/validation dependencies only.
+# The Glue job scripts themselves (jobs/*.py) depend on awsglue/pyspark,
+# which are provided by the AWS Glue runtime and are not installed here --
+# they're validated locally via py_compile/pyflakes, not by running them.
+pytest>=8.3
+pyyaml>=6.0
+cfn-lint>=1.53
+pyflakes>=3.2

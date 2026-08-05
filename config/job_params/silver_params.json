@@ -1,0 +1,15 @@
+{
+  "_comment": "Reference values for the retail-mdp-dev-silver Glue job's 'Job parameters' in the Console. When run as part of the retail-mdp-dev workflow (after bronze_job), batch_id/load_date/load_mode are picked up automatically from the workflow's run properties, and --batch_id/--load_date should be omitted entirely below. Set them explicitly (to a real, non-empty value) only for a standalone ad-hoc 'Run job' test outside the workflow -- required in that case, since there's no workflow run to hand them off from.",
+
+  "_IMPORTANT_empty_values": "Do NOT add a parameter row with an empty/blank value in the Console. AWS Glue does not correctly pass an empty-string parameter value through to the job's argument parser -- the job fails immediately with 'GlueArgumentError: argument --X: expected one argument'. If you're running via the workflow, simply don't add --batch_id/--load_date at all. If you're running standalone, give them real values (see _standalone_test_note below), never blank ones.",
+
+  "--warehouse_bucket": "retail-mdp-dev-warehouse-<ACCOUNT_ID>",
+  "--bronze_database": "retail_bronze",
+  "--silver_database": "retail_silver",
+  "--gold_database": "retail_gold",
+  "--pii_salt_secret_name": "retail-mdp-dev-pii-salt",
+  "--load_mode": "SNAPSHOT",
+
+  "_standalone_test_note": "For a manual test run outside the workflow, ADD --batch_id (the exact value you used for that bronze_job run -- see bronze_params.json's note on setting it to a known fixed value like 'manual-test-001' to make this easy) and --load_date (the same date used for that bronze run) as real parameter values.",
+  "_load_mode_values": ["DELTA", "SNAPSHOT"]
+}

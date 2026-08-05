@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - Glue Data Catalog layer (Stack 3 of 6).
+  Creates the bronze/silver/gold Glue databases that back the Iceberg
+  catalog. The Iceberg TABLES themselves are NOT created here -- they are
+  created by the Spark jobs on first run via
+  `CREATE TABLE IF NOT EXISTS ... USING iceberg LOCATION 's3://.../table/'`,
+  because Iceberg table metadata (schema, partition spec, snapshots) is
+  managed by the table format itself, not by CloudFormation. Deploy after
+  01-storage.yaml.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+Resources:
+
+  BronzeDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: retail_bronze
+        Description: >-
+          Raw-fidelity append-only Iceberg tables. One table per source feed,
+          minimally transformed, with ingestion metadata columns added.
+        LocationUri: !Sub
+          - "s3://${bucket}/bronze/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+
+  SilverDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: retail_silver
+        Description: >-
+          Cleansed, conformed, deduplicated current-state Iceberg tables
+          (facts + dimensions), upserted via MERGE INTO on business keys.
+        LocationUri: !Sub
+          - "s3://${bucket}/silver/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+
+  GoldDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: retail_gold
+        Description: >-
+          Business-ready aggregated KPI mart Iceberg tables, queryable
+          directly from Athena.
+        LocationUri: !Sub
+          - "s3://${bucket}/gold/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+
+Outputs:
+  BronzeDatabaseName:
+    Value: !Ref BronzeDatabase
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-bronze-database-name"
+  SilverDatabaseName:
+    Value: !Ref SilverDatabase
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-silver-database-name"
+  GoldDatabaseName:
+    Value: !Ref GoldDatabase
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-gold-database-name"

@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - Monitoring layer (Stack 6 of 6, optional).
+  Failure alerting (EventBridge -> SNS on any Glue job FAILED/TIMEOUT/ERROR
+  state) and a freshness SLA alarm (CloudWatch Logs metric filter "heartbeat"
+  on gold_job's last successful KPI mart, alarming if no success is observed
+  within FreshnessSlaHours). Deploy after 04-glue-jobs.yaml.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional email address subscribed to the alarm SNS topic. Leave blank
+      to skip the subscription (you can still add one manually, or point
+      other subscribers -- Slack/Chatbot/another Lambda -- at the topic
+      later). If set, check your inbox after deploying this stack and
+      confirm the SNS subscription.
+  FreshnessSlaSeconds:
+    Type: Number
+    Default: 93600
+    Description: >-
+      Alarm if gold_job has not completed successfully within this many
+      seconds (CloudWatch alarm Period must be expressed in seconds; CFN has
+      no arithmetic to derive it from an hours parameter). Default 93600 =
+      26 hours, giving a 1-run-per-day pipeline a couple hours of slack past
+      a 24h cadence before paging. Must be a multiple of 60.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Env}-alarms"
+      DisplayName: !Sub "${ProjectName} ${Env} pipeline alarms"
+
+  AlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlarmTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt JobFailureRule.Arn
+          - Sid: AllowCloudWatchAlarmsPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Env}-*"
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # Fires on any bronze/silver/gold job entering a failure-like state.
+  JobFailureRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-job-failure-rule"
+      Description: Alerts on Glue job FAILED/TIMEOUT/ERROR/STOPPED for the retail-mdp pipeline jobs.
+      EventPattern:
+        source: ["aws.glue"]
+        detail-type: ["Glue Job State Change"]
+        detail:
+          jobName:
+            - !ImportValue
+                Fn::Sub: "${ProjectName}-${Env}-bronze-job-name"
+            - !ImportValue
+                Fn::Sub: "${ProjectName}-${Env}-silver-job-name"
+            - !ImportValue
+                Fn::Sub: "${ProjectName}-${Env}-gold-job-name"
+          state: ["FAILED", "TIMEOUT", "ERROR", "STOPPED"]
+      State: ENABLED
+      Targets:
+        - Id: AlarmTopicTarget
+          Arn: !Ref AlarmTopic
+          InputTransformer:
+            InputPathsMap:
+              jobName: "$.detail.jobName"
+              state: "$.detail.state"
+              jobRunId: "$.detail.jobRunId"
+              message: "$.detail.message"
+            InputTemplate: >-
+              "retail-mdp pipeline alert: Glue job <jobName> (run <jobRunId>) entered state
+              <state>. Message: <message>. Check CloudWatch Logs for the job's log group and
+              the Workflow run in the Glue Console for details."
+
+  # Freshness SLA "heartbeat": every successful gold_job run emits a
+  # structured JSON log line (see common/logging_utils.py RunMetrics.log)
+  # for its last table, kpi_promo_lift, with status=SUCCESS. This metric
+  # filter counts those lines; the alarm below fires if the count is zero
+  # over a FreshnessSlaHours-long window, INCLUDING when there's no data at
+  # all (TreatMissingData: breaching) -- so a pipeline that stops running
+  # entirely still pages, not just one that runs and fails.
+  GoldSuccessHeartbeatMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !ImportValue
+        Fn::Sub: "${ProjectName}-${Env}-gold-log-group-name"
+      FilterPattern: '{ $.event = "glue_job_run_metrics" && $.table = "kpi_promo_lift" && $.status = "SUCCESS" }'
+      MetricTransformations:
+        - MetricName: GoldPipelineSuccessHeartbeat
+          MetricNamespace: !Sub "${ProjectName}/${Env}/GlueETL"
+          MetricValue: "1"
+          DefaultValue: 0
+
+  FreshnessSlaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Env}-gold-freshness-sla"
+      AlarmDescription: !Sub >-
+        No successful gold_job completion observed in the last
+        ${FreshnessSlaSeconds} seconds -- the KPI marts are stale.
+      Namespace: !Sub "${ProjectName}/${Env}/GlueETL"
+      MetricName: GoldPipelineSuccessHeartbeat
+      Statistic: Sum
+      Period: !Ref FreshnessSlaSeconds
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+Outputs:
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-alarm-topic-arn"

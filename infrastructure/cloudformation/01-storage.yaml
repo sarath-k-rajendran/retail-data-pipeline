@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - Storage layer (Stack 1 of 6).
+  Creates raw landing, Iceberg warehouse, scripts, temp, and access-log S3 buckets.
+  Deploy this stack first; other stacks import its Outputs.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+    Description: Short project prefix used in all resource names.
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+    Description: Environment name, used in resource naming and tagging.
+
+Resources:
+
+  # Access logs bucket must exist first; other buckets point their server
+  # access logs here. Not itself logged (would self-reference).
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-logs-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionAndExpireAccessLogs
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+              - StorageClass: GLACIER
+                TransitionInDays: 90
+            ExpirationInDays: 365
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: infra-logs
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-raw-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # Versioning protects against accidental overwrite/deletion of landed
+      # source files before Bronze has ingested them (replayability).
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldNoncurrentRawVersions
+            Status: Enabled
+            NoncurrentVersionTransitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 30
+            NoncurrentVersionExpirationInDays: 90
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: raw-access-logs/
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: raw
+
+  # Iceberg warehouse: bronze/silver/gold/quarantine data+metadata all live
+  # here under per-layer prefixes. Versioning is intentionally OFF -- Iceberg
+  # already retains prior data/metadata files for its own snapshot history
+  # and time-travel; stacking S3 versioning on top would double-retain and
+  # inflate storage cost for no additional benefit.
+  WarehouseBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-warehouse-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: warehouse-access-logs/
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: warehouse
+
+  ScriptsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-scripts-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: scripts-access-logs/
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: scripts
+
+  TempBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-temp-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTempAndSparkLogsAfter7Days
+            Status: Enabled
+            ExpirationInDays: 7
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: temp-access-logs/
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: temp
+
+  # Deny any non-TLS request across all pipeline buckets (encryption in transit).
+  RawBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt RawBucket.Arn
+              - !Sub "${RawBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  WarehouseBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WarehouseBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt WarehouseBucket.Arn
+              - !Sub "${WarehouseBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  ScriptsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ScriptsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ScriptsBucket.Arn
+              - !Sub "${ScriptsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  TempBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TempBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt TempBucket.Arn
+              - !Sub "${TempBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+Outputs:
+  RawBucketName:
+    Value: !Ref RawBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-raw-bucket-name"
+  RawBucketArn:
+    Value: !GetAtt RawBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-raw-bucket-arn"
+  WarehouseBucketName:
+    Value: !Ref WarehouseBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-warehouse-bucket-name"
+  WarehouseBucketArn:
+    Value: !GetAtt WarehouseBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-warehouse-bucket-arn"
+  ScriptsBucketName:
+    Value: !Ref ScriptsBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-scripts-bucket-name"
+  ScriptsBucketArn:
+    Value: !GetAtt ScriptsBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-scripts-bucket-arn"
+  TempBucketName:
+    Value: !Ref TempBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-temp-bucket-name"
+  TempBucketArn:
+    Value: !GetAtt TempBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-temp-bucket-arn"
+  LogsBucketName:
+    Value: !Ref LogsBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-logs-bucket-name"

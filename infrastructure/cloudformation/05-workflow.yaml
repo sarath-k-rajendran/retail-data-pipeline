@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - Glue Workflow orchestration (Stack 5 of 6).
+  Chains bronze -> silver -> gold via conditional triggers on job SUCCESS.
+  Deploy after 04-glue-jobs.yaml.
+
+  Console usage: open Glue > Workflows (orchestration) > <this workflow> >
+  Edit workflow > Properties > Run properties, add a row (Key: load_date or
+  --load_date, Value: the date partition you uploaded under raw/<source>/)
+  -> Save, then Run. That value changes on every run and can't be a fixed
+  stack parameter -- bronze_job.py reads it from the workflow's run
+  properties bag (falling back to the starting trigger's own Argument,
+  below, if not set there).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  StartingTriggerType:
+    Type: String
+    Default: ON_DEMAND
+    AllowedValues: [ON_DEMAND, SCHEDULED]
+    Description: >-
+      ON_DEMAND (default) matches the console-run runbook: you start the
+      workflow manually each time after uploading a new batch to raw/.
+      SCHEDULED runs bronze automatically on ScheduleExpression -- only
+      useful once an automated upload mechanism replaces manual Console
+      upload, so it is off by default.
+  ScheduleExpression:
+    Type: String
+    Default: "cron(0 6 * * ? *)"
+    Description: Only used when StartingTriggerType=SCHEDULED. Daily 06:00 UTC by default.
+  DefaultLoadDate:
+    Type: String
+    Default: "2026-01-01"
+    Description: >-
+      Placeholder --load_date seeded on the starting trigger as a fallback,
+      used only if the workflow's own Run properties (the primary,
+      Console-discoverable way to set this -- see the stack Description
+      above) don't have a load_date set. Bronze fails clearly if neither is
+      set to a real date. Editing the trigger's own Argument directly is
+      still possible (Workflows > trigger node > Edit) but Run properties
+      are the documented path.
+
+Conditions:
+  IsScheduled: !Equals [!Ref StartingTriggerType, "SCHEDULED"]
+
+Resources:
+
+  RetailWorkflow:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-workflow"
+      Description: Bronze -> Silver -> Gold retail Medallion pipeline orchestration.
+      Tags:
+        Project: !Ref ProjectName
+        Env: !Ref Env
+
+  StartingTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-start-bronze"
+      WorkflowName: !Ref RetailWorkflow
+      Type: !Ref StartingTriggerType
+      Schedule: !If [IsScheduled, !Ref ScheduleExpression, !Ref "AWS::NoValue"]
+      StartOnCreation: !If [IsScheduled, true, false]
+      Actions:
+        - JobName: !ImportValue
+            Fn::Sub: "${ProjectName}-${Env}-bronze-job-name"
+          Arguments:
+            "--load_date": !Ref DefaultLoadDate
+            "--load_mode": "SNAPSHOT"
+            "--csv_parse_mode": "PERMISSIVE"
+            "--force_reload": "false"
+
+  BronzeToSilverTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-bronze-to-silver"
+      WorkflowName: !Ref RetailWorkflow
+      Type: CONDITIONAL
+      StartOnCreation: true
+      Predicate:
+        Logical: AND
+        Conditions:
+          - LogicalOperator: EQUALS
+            JobName: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-bronze-job-name"
+            State: SUCCEEDED
+      Actions:
+        - JobName: !ImportValue
+            Fn::Sub: "${ProjectName}-${Env}-silver-job-name"
+
+  SilverToGoldTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-silver-to-gold"
+      WorkflowName: !Ref RetailWorkflow
+      Type: CONDITIONAL
+      StartOnCreation: true
+      Predicate:
+        Logical: AND
+        Conditions:
+          - LogicalOperator: EQUALS
+            JobName: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-silver-job-name"
+            State: SUCCEEDED
+      Actions:
+        - JobName: !ImportValue
+            Fn::Sub: "${ProjectName}-${Env}-gold-job-name"
+
+Outputs:
+  WorkflowName:
+    Value: !Ref RetailWorkflow
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-workflow-name"

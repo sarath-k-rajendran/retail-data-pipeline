@@ -1,0 +1,18 @@
+{
+  "_comment": "Reference values for the retail-mdp-dev-gold Glue job's 'Job parameters' in the Console. When run as part of the retail-mdp-dev workflow, load_date is picked up automatically from the workflow's run properties (set by bronze_job) and --load_date should be omitted entirely below. Set it explicitly (to a real, non-empty value) only for a standalone ad-hoc 'Run job' test outside the workflow.",
+
+  "_IMPORTANT_empty_values": "Do NOT add a parameter row with an empty/blank value in the Console. AWS Glue does not correctly pass an empty-string parameter value through to the job's argument parser -- the job fails immediately with 'GlueArgumentError: argument --X: expected one argument'. --load_date, --backfill_start_date, and --backfill_end_date are all omitted below for this reason: to use their defaults, don't add those parameter rows at all. Add them only with real values.",
+
+  "--warehouse_bucket": "retail-mdp-dev-warehouse-<ACCOUNT_ID>",
+  "--silver_database": "retail_silver",
+  "--gold_database": "retail_gold",
+  "--recompute_window_days": "3",
+  "--promo_lift_window_days": "90",
+  "--run_dq_checks": "false",
+
+  "_load_date_note": "Optional parameter, omitted above -- required as a real value (e.g. '2026-08-03') only for a standalone run outside the workflow.",
+  "_recompute_window_days_note": "Trailing window of kpi_date partitions recomputed each run, ending at load_date. Must be wide enough to cover how far back corrections/late-arriving facts can land (the mock generator's delta mode corrects 'yesterday', so the default of 3 is generous for that case).",
+  "_backfill_note": "Optional parameters, omitted above -- ADD both --backfill_start_date and --backfill_end_date (YYYY-MM-DD, real values) to explicitly recompute a historical range instead of the trailing window -- use this for a genuine backfill after a schema/logic fix.",
+  "_promo_lift_window_days_note": "Trailing history window used ONLY for kpi_promo_lift's promo-vs-non-promo comparison; independent of recompute_window_days.",
+  "_run_dq_checks_note": "Set to 'true' to run common/dq_report.py's full Silver+Gold DQ report inline at the end of this job run (logged to CloudWatch, not fatal to the job). Exists specifically so DQ validation doesn't require Glue Interactive Sessions or a 4th job -- useful in job-count/DPU/session-restricted accounts. Leave 'false' on routine runs to keep runtime (and DPU-hours) minimal."
+}

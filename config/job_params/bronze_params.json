@@ -1,0 +1,19 @@
+{
+  "_comment": "Reference values for the retail-mdp-dev-bronze Glue job's 'Job parameters' in the Console (Job details > Job parameters, or the 'Run job' dialog's parameter overrides). Values here are examples for a manual run against the 2026-08-03 mock batch -- substitute your own bucket names (from the 01-storage.yaml stack Outputs) and load_date. Type the Key exactly as shown below, INCLUDING the leading '--' (e.g. type '--load_date') -- the Console does not add that prefix for you.",
+
+  "_IMPORTANT_empty_values": "Do NOT add a parameter row with an empty/blank value in the Console. AWS Glue does not correctly pass an empty-string parameter value through to the job's argument parser -- the job fails immediately with 'GlueArgumentError: argument --X: expected one argument'. Every parameter below that the code treats as optional-with-a-blank-default (batch_id, sources) is intentionally OMITTED from this file's key list for that reason: to use its default, simply don't add that parameter row at all in the Console. Only add a parameter if you're giving it a real, non-empty value.",
+
+  "--raw_bucket": "retail-mdp-dev-raw-<ACCOUNT_ID>",
+  "--warehouse_bucket": "retail-mdp-dev-warehouse-<ACCOUNT_ID>",
+  "--bronze_database": "retail_bronze",
+  "--gold_database": "retail_gold",
+  "--load_date": "2026-08-03",
+  "--load_mode": "SNAPSHOT",
+  "--csv_parse_mode": "PERMISSIVE",
+  "--force_reload": "false",
+
+  "_csv_parse_mode_values": ["PERMISSIVE", "DROPMALFORMED", "FAILFAST"],
+  "_load_mode_values": ["DELTA", "SNAPSHOT"],
+  "_batch_id_note": "Optional parameter, omitted above -- if added, give it a real value (e.g. 'manual-test-001'), never blank. Omitted entirely: the job auto-generates a fresh UUID each run. Set it explicitly (a) for a standalone test run, so you can pass that same value to silver_job's --batch_id afterward without digging it out of CloudWatch Logs, or (b) when replaying/backfilling a specific batch with --force_reload=true.",
+  "_sources_note": "Optional parameter, omitted above -- if added, give it a real value: a comma-separated subset of product,store,promotion,orders,returns,web_sessions,inventory_snapshot. Omitted entirely: the job ingests all sources found under load_date."
+}

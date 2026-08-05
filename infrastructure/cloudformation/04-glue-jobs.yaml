@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - Glue ETL jobs (Stack 4 of 6).
+  Creates the bronze/silver/gold Glue Spark jobs with native Iceberg +
+  Glue Catalog configuration. Deploy after 01-storage.yaml, 02-iam.yaml, and
+  03-catalog.yaml. Before creating this stack, upload jobs/bronze_job.py,
+  jobs/silver_job.py, jobs/gold_job.py to s3://<scripts-bucket>/jobs/ and a
+  zipped jobs/common/ package to s3://<scripts-bucket>/common/common.zip
+  (see README.md runbook).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  GlueVersion:
+    Type: String
+    Default: "4.0"
+    Description: Glue 4.0+ required for native Iceberg support.
+  WorkerType:
+    Type: String
+    Default: G.1X
+    AllowedValues: [G.1X, G.2X, G.4X, G.8X]
+    Description: >-
+      G.1X (1 DPU/worker) is the smallest worker type AWS Glue allows for
+      job command "glueetl" (batch Spark ETL) -- G.025X exists but is only
+      valid for "gluestreaming" jobs and will fail stack creation with
+      "G.025X is only supported for job command [gluestreaming]" if used
+      here. Combined with the 2-worker minimum below, 2 DPU/job is the true
+      floor for this job type; see README.md Sec. 3.1 for what that means
+      for a DPU-capped account.
+  NumberOfWorkers:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    Description: >-
+      2 is AWS Glue's enforced minimum for every worker type valid for
+      glueetl jobs. Raising this multiplies DPU usage per job -- check it
+      against your account's DPU budget before increasing.
+  MaxRetries:
+    Type: Number
+    Default: 0
+    Description: >-
+      Kept at 0 by default: idempotency is handled explicitly (Bronze's
+      batch_id guard, Silver/Gold's MERGE/overwrite-partitions semantics),
+      so a blind Glue auto-retry isn't needed for correctness. Reruns are
+      done deliberately via the Workflow's "Resume/rerun" action in Console
+      so a transient failure doesn't retry into a still-broken upstream. It
+      also protects a DPU-hour budget: a silent auto-retry of a
+      failing job would otherwise double-spend runtime hours for no benefit.
+  JobTimeoutMinutes:
+    Type: Number
+    Default: 30
+    Description: >-
+      Kept low as a DPU-hour safety cap. At 2 DPU/job (G.1X x 2 workers,
+      this stack's default), one job hanging for the full timeout burns
+      2 x 0.5h = 1 DPU-hour; since this pipeline's jobs never run
+      concurrently (each Workflow trigger fires only after the previous
+      job SUCCEEDED), that single-job figure -- not the 3-job sum -- is
+      the realistic worst case for one run.
+
+Resources:
+
+  BronzeJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-bronze"
+      Description: Bronze layer - raw-fidelity append-only ingestion from S3 raw/ into Iceberg.
+      Role: !ImportValue
+        Fn::Sub: "${ProjectName}-${Env}-glue-execution-role-arn"
+      GlueVersion: !Ref GlueVersion
+      WorkerType: !Ref WorkerType
+      NumberOfWorkers: !Ref NumberOfWorkers
+      MaxRetries: !Ref MaxRetries
+      Timeout: !Ref JobTimeoutMinutes
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Sub
+          - "s3://${bucket}/jobs/bronze_job.py"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+      DefaultArguments:
+        "--job-language": "python"
+        "--job-bookmark-option": "job-bookmark-disable"
+        "--enable-continuous-cloudwatch-log": "true"
+        "--enable-metrics": "true"
+        "--enable-glue-datacatalog": "true"
+        "--enable-job-insights": "true"
+        "--continuous-log-logGroup": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-bronze-log-group-name"
+        "--datalake-formats": "iceberg"
+        "--extra-py-files": !Sub
+          - "s3://${bucket}/common/common.zip"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+        "--TempDir": !Sub
+          - "s3://${bucket}/glue-temp/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-temp-bucket-name"
+        "--conf": !Sub
+          - >-
+            spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog
+            --conf spark.sql.catalog.glue_catalog.warehouse=s3://${warehouseBucket}/
+            --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog
+            --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+            --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+          - warehouseBucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--raw_bucket": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-raw-bucket-name"
+        "--warehouse_bucket": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--bronze_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-bronze-database-name"
+        "--gold_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-gold-database-name"
+        "--csv_parse_mode": "PERMISSIVE"
+        "--load_mode": "SNAPSHOT"
+        "--force_reload": "false"
+      Tags:
+        Project: !Ref ProjectName
+        Env: !Ref Env
+        Layer: bronze
+
+  SilverJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-silver"
+      Description: Silver layer - cleanse, dedup, quarantine, conform, and MERGE-upsert into Iceberg.
+      Role: !ImportValue
+        Fn::Sub: "${ProjectName}-${Env}-glue-execution-role-arn"
+      GlueVersion: !Ref GlueVersion
+      WorkerType: !Ref WorkerType
+      NumberOfWorkers: !Ref NumberOfWorkers
+      MaxRetries: !Ref MaxRetries
+      Timeout: !Ref JobTimeoutMinutes
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Sub
+          - "s3://${bucket}/jobs/silver_job.py"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+      DefaultArguments:
+        "--job-language": "python"
+        "--job-bookmark-option": "job-bookmark-disable"
+        "--enable-continuous-cloudwatch-log": "true"
+        "--enable-metrics": "true"
+        "--enable-glue-datacatalog": "true"
+        "--enable-job-insights": "true"
+        "--continuous-log-logGroup": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-silver-log-group-name"
+        "--datalake-formats": "iceberg"
+        "--extra-py-files": !Sub
+          - "s3://${bucket}/common/common.zip"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+        "--TempDir": !Sub
+          - "s3://${bucket}/glue-temp/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-temp-bucket-name"
+        "--conf": !Sub
+          - >-
+            spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog
+            --conf spark.sql.catalog.glue_catalog.warehouse=s3://${warehouseBucket}/
+            --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog
+            --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+            --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+          - warehouseBucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--warehouse_bucket": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--bronze_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-bronze-database-name"
+        "--silver_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-silver-database-name"
+        "--gold_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-gold-database-name"
+        "--pii_salt_secret_name": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-pii-salt-secret-name"
+        "--load_mode": "SNAPSHOT"
+      Tags:
+        Project: !Ref ProjectName
+        Env: !Ref Env
+        Layer: silver
+
+  GoldJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-gold"
+      Description: Gold layer - retail KPI marts, recomputed via atomic partition overwrite.
+      Role: !ImportValue
+        Fn::Sub: "${ProjectName}-${Env}-glue-execution-role-arn"
+      GlueVersion: !Ref GlueVersion
+      WorkerType: !Ref WorkerType
+      NumberOfWorkers: !Ref NumberOfWorkers
+      MaxRetries: !Ref MaxRetries
+      Timeout: !Ref JobTimeoutMinutes
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Sub
+          - "s3://${bucket}/jobs/gold_job.py"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+      DefaultArguments:
+        "--job-language": "python"
+        "--job-bookmark-option": "job-bookmark-disable"
+        "--enable-continuous-cloudwatch-log": "true"
+        "--enable-metrics": "true"
+        "--enable-glue-datacatalog": "true"
+        "--enable-job-insights": "true"
+        "--continuous-log-logGroup": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-gold-log-group-name"
+        "--datalake-formats": "iceberg"
+        "--extra-py-files": !Sub
+          - "s3://${bucket}/common/common.zip"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-scripts-bucket-name"
+        "--TempDir": !Sub
+          - "s3://${bucket}/glue-temp/"
+          - bucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-temp-bucket-name"
+        "--conf": !Sub
+          - >-
+            spark.sql.catalog.glue_catalog=org.apache.iceberg.spark.SparkCatalog
+            --conf spark.sql.catalog.glue_catalog.warehouse=s3://${warehouseBucket}/
+            --conf spark.sql.catalog.glue_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog
+            --conf spark.sql.catalog.glue_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+            --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+          - warehouseBucket: !ImportValue
+              Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--warehouse_bucket": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-warehouse-bucket-name"
+        "--silver_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-silver-database-name"
+        "--gold_database": !ImportValue
+          Fn::Sub: "${ProjectName}-${Env}-gold-database-name"
+        "--recompute_window_days": "3"
+        "--promo_lift_window_days": "90"
+        "--run_dq_checks": "false"
+      Tags:
+        Project: !Ref ProjectName
+        Env: !Ref Env
+        Layer: gold
+
+Outputs:
+  BronzeJobName:
+    Value: !Ref BronzeJob
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-bronze-job-name"
+  SilverJobName:
+    Value: !Ref SilverJob
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-silver-job-name"
+  GoldJobName:
+    Value: !Ref GoldJob
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-gold-job-name"

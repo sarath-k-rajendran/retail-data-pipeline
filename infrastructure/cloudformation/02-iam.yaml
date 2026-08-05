@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Retail Medallion Pipeline - IAM layer (Stack 2 of 6).
+  Creates a single least-privilege Glue execution role shared by the
+  bronze/silver/gold jobs, scoped to only this pipeline's buckets and
+  Glue Catalog databases. Deploy after 01-storage.yaml.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: retail-mdp
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch Logs retention for each job's dedicated log group.
+
+Resources:
+
+  # Explicit, retention-bounded log groups (one per job) referenced by each
+  # Glue job's --continuous-log-logGroup argument in 04-glue-jobs.yaml.
+  # Created here (not in 06-monitoring.yaml) to avoid a circular stack
+  # dependency, since 04-glue-jobs.yaml needs to import these names and
+  # 06-monitoring.yaml itself depends on 04-glue-jobs.yaml's job names.
+  BronzeJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-glue/${ProjectName}-${Env}/bronze"
+      RetentionInDays: !Ref LogRetentionDays
+
+  SilverJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-glue/${ProjectName}-${Env}/silver"
+      RetentionInDays: !Ref LogRetentionDays
+
+  GoldJobLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws-glue/${ProjectName}-${Env}/gold"
+      RetentionInDays: !Ref LogRetentionDays
+
+  GlueExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Env}-glue-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      Description: >-
+        Least-privilege execution role for the bronze/silver/gold Glue ETL
+        jobs. Scoped to this project's S3 buckets and Glue Catalog databases
+        only -- no wildcard resource access, no AWSGlueServiceRole managed
+        policy (which is broader than this pipeline needs).
+      Policies:
+        - PolicyName: S3DataAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadRawLandingZone
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-raw-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-raw-${AWS::AccountId}/*"
+              - Sid: ReadWriteWarehouse
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-warehouse-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-warehouse-${AWS::AccountId}/*"
+              - Sid: ReadScripts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-scripts-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-scripts-${AWS::AccountId}/*"
+              - Sid: ReadWriteTemp
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-temp-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::${ProjectName}-${Env}-temp-${AWS::AccountId}/*"
+        - PolicyName: GlueCatalogAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CatalogAndDatabaseLevel
+                Effect: Allow
+                Action:
+                  - glue:GetCatalogImportStatus
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_bronze"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_silver"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_gold"
+              - Sid: TableLevelReadWrite
+                Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:DeleteTable
+                  - glue:BatchCreatePartition
+                  - glue:BatchDeletePartition
+                  - glue:BatchGetPartition
+                  - glue:BatchUpdatePartition
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                  - glue:CreatePartition
+                  - glue:UpdatePartition
+                  - glue:DeletePartition
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_bronze"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_silver"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/retail_gold"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/retail_bronze/*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/retail_silver/*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/retail_gold/*"
+        - PolicyName: GlueJobRuntimeAndLogging
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SelfDescribeForBookmarksAndMetrics
+                Effect: Allow
+                Action:
+                  - glue:GetJob
+                  - glue:GetJobRun
+                  - glue:GetJobRuns
+                  - glue:BatchStopJobRun
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:job/${ProjectName}-${Env}-*"
+              - Sid: WorkflowRunPropertiesHandoff
+                Effect: Allow
+                Action:
+                  - glue:GetWorkflowRun
+                  - glue:GetWorkflowRunProperties
+                  - glue:PutWorkflowRunProperties
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:workflow/${ProjectName}-${Env}-*"
+              - Sid: CloudWatchLogsWrite
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/*"
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace:
+                      # "Glue" is AWS's own reserved namespace that Glue's
+                      # built-in --enable-metrics job feature publishes to
+                      # (task counts, memory, etc.) -- required for that
+                      # feature to work at all, not something we chose.
+                      - "Glue"
+                      # Reserved for any custom job metrics this pipeline's
+                      # own code might publish directly in the future (none
+                      # currently does -- observability today goes through
+                      # structured JSON logs + pipeline_run_log instead).
+                      - !Sub "${ProjectName}/${Env}/GlueETL"
+        - PolicyName: PiiSaltSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadPiiSaltSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref PiiSaltSecret
+
+  # Salt used by silver_job.py to hash PII fields (customer_email) before
+  # they land in Silver -- generated randomly at deploy time, never
+  # hardcoded in job code or Glue job parameters. Only the secret's name is
+  # passed to the job (--pii_salt_secret_name); the job fetches the value at
+  # runtime via Secrets Manager.
+  PiiSaltSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}-${Env}-pii-salt"
+      Description: >-
+        Salt for hashing PII fields (e.g. customer_email) in the Silver
+        layer. Auto-generated; rotate by updating the secret value directly
+        (do not check any value into source control).
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: salt
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+Outputs:
+  GlueExecutionRoleArn:
+    Value: !GetAtt GlueExecutionRole.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-glue-execution-role-arn"
+  GlueExecutionRoleName:
+    Value: !Ref GlueExecutionRole
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-glue-execution-role-name"
+  PiiSaltSecretName:
+    Value: !Sub "${ProjectName}-${Env}-pii-salt"
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-pii-salt-secret-name"
+  PiiSaltSecretArn:
+    Value: !Ref PiiSaltSecret
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-pii-salt-secret-arn"
+  BronzeJobLogGroupName:
+    Value: !Ref BronzeJobLogGroup
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-bronze-log-group-name"
+  SilverJobLogGroupName:
+    Value: !Ref SilverJobLogGroup
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-silver-log-group-name"
+  GoldJobLogGroupName:
+    Value: !Ref GoldJobLogGroup
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-gold-log-group-name"
