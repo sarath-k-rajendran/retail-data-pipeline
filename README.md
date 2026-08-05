@@ -391,18 +391,24 @@ Upload `dist/raw_upload/`'s (now updated) 7 folders the same way.
 
 ### 5.5 Run the workflow
 
-1. **Glue Console > Workflows (orchestration) > `retail-mdp-dev-workflow`**.
-2. Click **Edit workflow**. Under **Properties > Run properties**, add a row with Key
-   `load_date` (or `--load_date` -- both are accepted, see below) and Value set to the date
-   you uploaded (`2026-08-03` for the first run) -> **Save**. This is the one value that
-   changes per run and can't be a fixed stack default. Optionally also add `batch_id` with a
-   fixed value of your choosing, to make replaying/debugging a specific run easier.
+Every run needs `--load_date` set to the date partition you uploaded (§5.4), and optionally a
+fixed `--batch_id`. Two places to set this -- see `DEPLOYMENT.md` §7 for full detail on both,
+including a worked example. The verified, recommended path:
+
+1. **Glue Console > Workflows (orchestration) > `retail-mdp-dev-workflow`** -> **Details**
+   tab -> in the graph, click the **`retail-mdp-dev-start-bronze`** node -> **Edit**.
+2. Define `--load_date` (e.g. `2026-08-03`) and, optionally, `--batch_id` (e.g.
+   `manual-run-2026-08-03`) -> Save.
 3. Back on the workflow, click **Run**.
 4. Watch progress under the **History** tab -- each run shows bronze, then silver, then gold
    as they complete. A full run at `--scale 1.0` typically takes a few minutes per job on
    the default `G.1X x 2` workers -- see [§3.1](#31-dpu-budget-for-capacity-restricted-accounts)
    for the DPU math if your account has a capacity cap.
-5. For the delta batch: repeat steps 2-4 with `--load_date=2026-08-04`.
+5. For the delta batch: repeat steps 1-3 with `--load_date=2026-08-04`.
+
+(Alternative: the Workflow's own **Edit workflow > Properties > Run properties** accepts the
+same two keys, with or without the `--` prefix -- either mechanism works, but if you set both,
+the Run properties value takes priority over the trigger's own argument.)
 
 ### 5.6 Manual/ad-hoc job test runs (outside the workflow)
 

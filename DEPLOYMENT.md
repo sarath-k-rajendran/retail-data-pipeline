@@ -166,20 +166,50 @@ This recreates every `<source>/<yyyy>/<mm>/<dd>/<source>.csv` key in one action 
 
 ## 7. Run the workflow
 
+Every run needs `--load_date` set to the date partition you uploaded in step 6 (and,
+optionally, a fixed `--batch_id` so you can find/replay this exact run later). There are two
+places to set this -- pick **one** (if you set both, Method B takes priority, since Bronze
+checks the Workflow's Run properties before its own direct trigger argument):
+
+### Method A: edit the starting trigger's parameters (recommended, verified in Console)
+
 1. **Glue Console > Workflows (orchestration) > `retail-mdp-dev-workflow`**.
-2. Click **Edit workflow**. Under **Properties > Run properties**, add two rows:
-   `load_date` = `<TODAY>` (the same date used in step 6) and, optionally, `batch_id` =
-   a fixed value of your choosing (e.g. `manual-test-001`) -> **Save**. This is the one
-   value that changes every run. (Either `load_date` or `--load_date` as the Key works --
-   the jobs check both forms.)
-3. Back on the workflow page, click **Run**.
-4. **History** tab -> watch bronze -> silver -> gold complete in sequence. At `--scale 0.3`
-   on the default `G.1X x 2` workers (2 DPU per job; only one job runs at a time, so peak
-   concurrent usage is 2 DPU, not 6 -- see README.md §3.1 if your account enforces a static
-   sum across job definitions instead), expect a few minutes total.
-5. If a job fails: click into its run, open the **Error logs** link (goes straight to
-   CloudWatch Logs for that job run), fix the root cause, then re-run the workflow (or just
-   that job -- see README.md §5.6 for standalone job re-runs).
+2. Open the **Details** tab.
+3. In the workflow **graph**, click the node named **`retail-mdp-dev-start-bronze`**
+   (the starting trigger -- it's the first node, feeding into the bronze job).
+4. Click **Edit**.
+5. Under the job action's parameters, define (or update) these two properties:
+
+   | Key | Value | Required? |
+   |---|---|---|
+   | `--load_date` | `2026-08-04` | Yes -- must match the `yyyy/mm/dd` prefix you uploaded raw files under in step 6 |
+   | `--batch_id` | `manual-run-2026-08-04` | No -- omit to auto-generate a UUID each run; set it to something memorable if you want to reuse the exact value later (e.g. for `--force_reload`, or to run Silver standalone against this exact batch) |
+
+   (Example values above -- substitute your actual date/choice of batch_id.)
+6. Save the trigger.
+7. Back on the workflow page, click **Run**.
+
+### Method B: Workflow "Run properties"
+
+1. **Glue Console > Workflows (orchestration) > `retail-mdp-dev-workflow`**.
+2. Click **Edit workflow**. Under **Properties > Run properties**, add the same two rows
+   (Key: `load_date` or `--load_date` -- both forms work -- Value: `2026-08-04`; optionally
+   `batch_id` / `--batch_id` = `manual-run-2026-08-04`) -> **Save**.
+3. Click **Run**.
+
+This sets values on the *workflow* itself (persists across runs until you change it again),
+versus Method A which sets them on the *trigger's action* (same idea, different UI path --
+whichever you find easier to navigate to is fine).
+
+### Then, either way:
+
+- **History** tab -> watch bronze -> silver -> gold complete in sequence. At `--scale 0.3`
+  on the default `G.1X x 2` workers (2 DPU per job; only one job runs at a time, so peak
+  concurrent usage is 2 DPU, not 6 -- see README.md §3.1 if your account enforces a static
+  sum across job definitions instead), expect a few minutes total.
+- If a job fails: click into its run, open the **Error logs** link (goes straight to
+  CloudWatch Logs for that job run), fix the root cause, then re-run the workflow (or just
+  that job -- see README.md §5.6 for standalone job re-runs).
 
 ---
 

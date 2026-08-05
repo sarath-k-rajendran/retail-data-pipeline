@@ -173,10 +173,12 @@ def main() -> None:
     load_date = get_run_property(run_props, "load_date") or args["load_date"]
     if not load_date:
         raise ValueError(
-            "Could not resolve --load_date. Set it either as a direct job parameter, as the "
-            "starting trigger's Argument, or as a 'Run property' on the Workflow itself "
-            "(Workflows > select workflow > Edit workflow > Run properties -- Key: load_date "
-            "or --load_date, Value: YYYY-MM-DD) before running it."
+            "Could not resolve --load_date. Set it either (a) on the starting trigger: "
+            "Workflows > select workflow > Details tab > click the start-bronze node in the "
+            "graph > Edit > set --load_date (Key: --load_date, Value: YYYY-MM-DD); (b) as a "
+            "'Run property' on the Workflow itself: Edit workflow > Properties > Run "
+            "properties (Key: load_date or --load_date, Value: YYYY-MM-DD); or (c) as a "
+            "direct job parameter for a standalone run outside the workflow."
         )
     batch_id = get_run_property(run_props, "batch_id") or args["batch_id"] or new_batch_id()
     sources = [s.strip() for s in args["sources"].split(",") if s.strip()] or list(BRONZE_SOURCES.keys())
