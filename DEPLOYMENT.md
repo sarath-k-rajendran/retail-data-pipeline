@@ -185,6 +185,12 @@ This recreates every `<source>/<yyyy>/<mm>/<dd>/<source>.csv` key in one action 
 
 ## 8. Validate
 
+- [ ] **One-time Athena setup:** point a workgroup at the query-results bucket stack 1
+      created -- **Athena Console > Administration > Workgroups > `primary` (or your own) >
+      Edit > Query result configuration > Location of query result** ->
+      `s3://retail-mdp-dev-athena-query-results-<account-id>/`. Without this, Athena queries
+      fail with "no output location" errors.
+
 Run the Athena queries in `README.md` §6 (row counts, quarantine reason codes, referential
 integrity, PII masking, KPI sanity checks, `pipeline_run_log`). At minimum, confirm:
 
