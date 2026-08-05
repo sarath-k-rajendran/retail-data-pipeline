@@ -201,6 +201,48 @@ Resources:
         - Key: Layer
           Value: temp
 
+  # Athena query result location (Athena Console > Workgroup settings >
+  # Query result location, or set per-workgroup in a Console-created
+  # workgroup). Not read/written by any Glue job -- purely for ad-hoc
+  # Athena querying against the tables the pipeline produces.
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Env}-athena-query-results-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          # Query results are regenerable (just re-run the query) --
+          # expire them rather than retain indefinitely.
+          - Id: ExpireQueryResultsAfter30Days
+            Status: Enabled
+            ExpirationInDays: 30
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: athena-query-results-access-logs/
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: !Ref Env
+        - Key: Layer
+          Value: athena-query-results
+
   # Deny any non-TLS request across all pipeline buckets (encryption in transit).
   RawBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -274,6 +316,24 @@ Resources:
               Bool:
                 aws:SecureTransport: "false"
 
+  AthenaResultsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AthenaResultsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt AthenaResultsBucket.Arn
+              - !Sub "${AthenaResultsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
 Outputs:
   RawBucketName:
     Value: !Ref RawBucket
@@ -311,3 +371,11 @@ Outputs:
     Value: !Ref LogsBucket
     Export:
       Name: !Sub "${ProjectName}-${Env}-logs-bucket-name"
+  AthenaResultsBucketName:
+    Value: !Ref AthenaResultsBucket
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-athena-query-results-bucket-name"
+  AthenaResultsBucketArn:
+    Value: !GetAtt AthenaResultsBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Env}-athena-query-results-bucket-arn"

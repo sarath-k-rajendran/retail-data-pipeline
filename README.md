@@ -105,7 +105,7 @@ retail-data-pipeline/
 │   ├── build_common_zip.py              Packages jobs/common/ into dist/common.zip for --extra-py-files
 │   └── stage_for_s3_upload.py           Reorganizes mock output into dist/raw_upload/ for one-shot S3 folder upload
 ├── infrastructure/cloudformation/
-│   ├── 01-storage.yaml                  S3 buckets: raw, warehouse, scripts, temp, logs
+│   ├── 01-storage.yaml                  S3 buckets: raw, warehouse, scripts, temp, logs, athena-query-results
 │   ├── 02-iam.yaml                      Glue execution role, PII salt secret, per-job log groups
 │   ├── 03-catalog.yaml                  Glue Catalog databases: retail_bronze/silver/gold
 │   ├── 04-glue-jobs.yaml                The 3 Glue Spark jobs (bronze/silver/gold) + Iceberg conf
@@ -143,7 +143,7 @@ Six independent stacks, deployed **in numeric order** (each imports prior stacks
 
 | # | Stack | Creates | Depends on |
 |---|---|---|---|
-| 1 | `01-storage.yaml` | 5 S3 buckets (raw, warehouse, scripts, temp, logs), TLS-only bucket policies, SSE-S3, versioning/lifecycle per bucket | none |
+| 1 | `01-storage.yaml` | 6 S3 buckets (raw, warehouse, scripts, temp, logs, athena-query-results), TLS-only bucket policies, SSE-S3, versioning/lifecycle per bucket | none |
 | 2 | `02-iam.yaml` | Glue execution role (least-privilege, scoped to this project's buckets/databases only), PII salt secret (Secrets Manager, auto-generated), 3 per-job CloudWatch Log Groups | Stack 1 (bucket ARNs) |
 | 3 | `03-catalog.yaml` | Glue databases `retail_bronze`/`retail_silver`/`retail_gold` | Stack 1 (warehouse bucket for `LocationUri`) |
 | 4 | `04-glue-jobs.yaml` | 3 Glue Spark jobs (bronze/silver/gold), Iceberg + Glue Catalog Spark config, all job parameters | Stacks 1-3 |
@@ -428,8 +428,15 @@ Each job can also be run standalone via **Glue Console > Jobs > select job > Run
 
 ## 6. Validation checklist (Athena)
 
-Open **Athena Console** (or **Glue Console > Data Catalog > query editor**), select
-workgroup with an S3 query-result location configured, and run:
+**One-time setup:** Athena needs an S3 location to write query results to. `01-storage.yaml`
+creates a bucket for exactly this (`retail-mdp-dev-athena-query-results-<account-id>`,
+30-day lifecycle expiration since results are just re-run to regenerate) -- point your
+workgroup at it once: **Athena Console > Administration > Workgroups > `primary`
+(or your own) > Edit > Query result configuration > Location of query result** ->
+`s3://retail-mdp-dev-athena-query-results-<account-id>/`.
+
+Then open **Athena Console** (or **Glue Console > Data Catalog > query editor**), select that
+workgroup, and run:
 
 ```sql
 -- 1. Bronze landed the batch
